@@ -3,13 +3,31 @@
 Importing this module guarantees every table is registered, which is what
 Alembic autogenerate and any metadata-driven tooling need. It is the single
 import point for "all models" — do not scatter model imports elsewhere.
+
+Import order matters for relationship resolution: parents (Organization, User,
+Team) before children that FK to them.
 """
 
 from app.db.base_class import Base  # noqa: F401  (re-exported)
 
-# Import every model module for its side effect of registering on Base.metadata.
+# Identity & access (tenancy roots first).
+from app.models.organization import Organization  # noqa: F401
 from app.models.user import User  # noqa: F401
+from app.models.team import Team  # noqa: F401
+from app.models.membership import Membership  # noqa: F401
+from app.models.refresh_token import RefreshToken  # noqa: F401
+
+# Domain.
 from app.models.lead import Lead  # noqa: F401
 from app.models.lead_event import LeadEvent  # noqa: F401
 
-__all__ = ["Base", "User", "Lead", "LeadEvent"]
+__all__ = [
+    "Base",
+    "Organization",
+    "User",
+    "Team",
+    "Membership",
+    "RefreshToken",
+    "Lead",
+    "LeadEvent",
+]

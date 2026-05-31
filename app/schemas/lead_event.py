@@ -1,13 +1,18 @@
-from pydantic import BaseModel
+"""Lead event response schema."""
+
+from __future__ import annotations
+
 from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict
 
 
 class LeadEventResponse(BaseModel):
     id: int
     lead_id: int
     event_type: str
-    details: str
+    details: str | None = None  # column is nullable (audit: was non-optional → serialization error)
+    actor: str | None = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
