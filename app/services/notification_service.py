@@ -1,10 +1,12 @@
-"""Hot-lead notification fan-out (email + optional webhook).
+"""Notification channel adapters + outbox enqueue helpers.
 
-Configuration comes from `settings` (no hardcoded webhook URL or creds).
-Failures are logged via structured logging and surfaced in the return value
-rather than swallowed by `print()`. In Phase 5 the actual delivery moves
-behind the outbox relay for exactly-once semantics; this module remains the
-channel adapter it calls.
+The exactly-once fix (architecture review §8.5): instead of sending email /
+webhook inline inside the qualification task — where a retry duplicates them —
+we enqueue an outbox row in the same transaction as the state change. The
+Beat-driven relay (outbox_service.relay_pending) performs the actual send.
+
+`dispatch_webhook` and `send_email` (email_service) are the low-level adapters
+the relay calls; `enqueue_hot_lead_alert` is what the domain calls.
 """
 
 from __future__ import annotations
@@ -12,40 +14,59 @@ from __future__ import annotations
 import logging
 
 import requests
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.services.email_service import send_hot_lead_email
+from app.core.enums import OutboxChannel
+from app.services import outbox_service
 
 logger = logging.getLogger(__name__)
 
 
-def notify_hot_lead(lead) -> str:
-    """Best-effort delivery to all configured channels. Returns a status
-    string summarizing each channel's outcome."""
-    email_status = "email_skipped"
-    webhook_status = "webhook_skipped"
+def dispatch_webhook(payload: dict) -> None:
+    """Deliver a webhook. Raises on failure so the relay can retry/dead-letter."""
+    url = payload.get("url") or settings.WEBHOOK_URL
+    if not url:
+        raise RuntimeError("No webhook URL configured")
+    response = requests.post(url, json=payload.get("body", payload), timeout=10)
+    response.raise_for_status()
 
-    # ---- Email ----
+
+def enqueue_hot_lead_alert(db: Session, *, org_id: int, lead) -> None:
+    """Enqueue hot-lead notifications (email + webhook if configured) into the
+    outbox. Idempotent per lead via the dedupe key — a task retry won't double
+    enqueue, and the relay won't double send."""
+    body = (
+        "HOT LEAD ALERT\n\n"
+        f"Name: {lead.name}\n"
+        f"Phone: {lead.phone}\n"
+        f"Email: {lead.email}\n"
+        f"Budget: {lead.budget}\n"
+        f"Location: {lead.location}\n"
+    )
+
     if settings.SMTP_USERNAME and settings.SMTP_PASSWORD:
-        try:
-            send_hot_lead_email(
-                lead.name,
-                lead.phone,
-                lead.email,
-                lead.budget,
-                lead.location,
-            )
-            email_status = "email_sent"
-        except Exception:  # noqa: BLE001 - report, don't crash the pipeline
-            logger.exception("Hot-lead email delivery failed", extra={"lead_id": getattr(lead, "id", None)})
-            email_status = "email_failed"
+        outbox_service.enqueue(
+            db,
+            org_id=org_id,
+            channel=OutboxChannel.EMAIL,
+            dedupe_key=f"hot_lead_email:lead:{lead.id}",
+            payload={
+                "to": settings.SMTP_FROM,
+                "subject": "HOT LEAD ALERT",
+                "body": body,
+            },
+        )
 
-    # ---- Webhook ----
     if settings.WEBHOOK_URL:
-        try:
-            response = requests.post(
-                settings.WEBHOOK_URL,
-                json={
+        outbox_service.enqueue(
+            db,
+            org_id=org_id,
+            channel=OutboxChannel.WEBHOOK,
+            dedupe_key=f"hot_lead_webhook:lead:{lead.id}",
+            payload={
+                "url": settings.WEBHOOK_URL,
+                "body": {
                     "lead_id": lead.id,
                     "name": lead.name,
                     "phone": lead.phone,
@@ -54,12 +75,5 @@ def notify_hot_lead(lead) -> str:
                     "location": lead.location,
                     "decision": "hot_lead",
                 },
-                timeout=10,
-            )
-            response.raise_for_status()
-            webhook_status = "webhook_sent"
-        except Exception:  # noqa: BLE001
-            logger.exception("Hot-lead webhook delivery failed", extra={"lead_id": getattr(lead, "id", None)})
-            webhook_status = "webhook_failed"
-
-    return f"{email_status} | {webhook_status}"
+            },
+        )

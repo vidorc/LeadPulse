@@ -65,3 +65,34 @@ class Intent(str, enum.Enum):
     SUPPORT = "support"
     SPAM = "spam"
     UNKNOWN = "unknown"
+
+
+class EntityType(str, enum.Enum):
+    """What kind of domain object a timeline event / scheduled job concerns."""
+
+    LEAD = "lead"
+    OPPORTUNITY = "opportunity"
+    PROPOSAL = "proposal"
+    MEETING = "meeting"
+    ENROLLMENT = "enrollment"
+
+
+class ScheduledJobStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+class OutboxStatus(str, enum.Enum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+    DEAD = "dead"  # exceeded max attempts
+
+
+class OutboxChannel(str, enum.Enum):
+    EMAIL = "email"
+    WEBHOOK = "webhook"
+    IN_APP = "in_app"

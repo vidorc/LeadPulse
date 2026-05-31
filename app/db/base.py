@@ -19,7 +19,11 @@ from app.models.refresh_token import RefreshToken  # noqa: F401
 
 # Domain.
 from app.models.lead import Lead  # noqa: F401
-from app.models.lead_event import LeadEvent  # noqa: F401
+
+# Workflow engine substrate (timeline, scheduling, outbox).
+from app.models.event import Event  # noqa: F401
+from app.models.scheduled_job import ScheduledJob  # noqa: F401
+from app.models.outbox import OutboxMessage  # noqa: F401
 
 __all__ = [
     "Base",
@@ -29,5 +33,7 @@ __all__ = [
     "Membership",
     "RefreshToken",
     "Lead",
-    "LeadEvent",
+    "Event",
+    "ScheduledJob",
+    "OutboxMessage",
 ]

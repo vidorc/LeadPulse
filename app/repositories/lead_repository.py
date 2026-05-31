@@ -7,7 +7,6 @@ from sqlalchemy import func, select
 from app.core.enums import LeadDecision, LeadStatus
 from app.db.repository import TenantRepository
 from app.models.lead import Lead
-from app.models.lead_event import LeadEvent
 
 
 class LeadRepository(TenantRepository[Lead]):
@@ -41,15 +40,3 @@ class LeadRepository(TenantRepository[Lead]):
             "manual_reviews": review,
             "converted": converted,
         }
-
-
-class LeadEventRepository(TenantRepository[LeadEvent]):
-    model = LeadEvent
-
-    def for_lead(self, lead_id: int) -> list[LeadEvent]:
-        stmt = (
-            self.scoped_query()
-            .where(LeadEvent.lead_id == lead_id)
-            .order_by(LeadEvent.created_at.asc())
-        )
-        return list(self.db.execute(stmt).scalars().all())

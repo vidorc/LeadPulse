@@ -1,20 +1,20 @@
-"""Route a lead decision to its side effect.
+"""Map a lead decision to its descriptive next-action result string.
 
-Enum-aware. In Phase 5 the side effects move behind the outbox relay for
-exactly-once delivery; today it calls the notification adapter directly.
+Side effects (email/webhook) are NOT performed here anymore — they are enqueued
+into the outbox within the qualification task's transaction for exactly-once
+delivery. This function only describes the action taken, for `lead.action_result`.
 """
 
 from __future__ import annotations
 
 from app.core.enums import LeadDecision
-from app.services.notification_service import notify_hot_lead
 
 
-def execute_action(decision: LeadDecision | str, lead) -> str:
+def describe_action(decision: LeadDecision | str) -> str:
     value = decision.value if isinstance(decision, LeadDecision) else decision
 
     if value == LeadDecision.HOT_LEAD.value:
-        return notify_hot_lead(lead)
+        return "Hot lead alert queued"
     if value == LeadDecision.WARM_LEAD.value:
         return "Follow-up scheduled"
     if value == LeadDecision.COLD_LEAD.value:

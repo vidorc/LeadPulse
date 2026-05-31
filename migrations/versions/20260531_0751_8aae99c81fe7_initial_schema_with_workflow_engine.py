@@ -1,8 +1,8 @@
-"""initial tenancy-aware schema
+"""initial schema with workflow engine
 
-Revision ID: 4a74893d20c8
+Revision ID: 8aae99c81fe7
 Revises:
-Create Date: 2026-05-31 07:02:16.896067+00:00
+Create Date: 2026-05-31 07:51:32.414557+00:00
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = "4a74893d20c8"
+revision: str = "8aae99c81fe7"
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -69,6 +69,104 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_users_email"), "users", ["email"], unique=True)
     op.create_table(
+        "events",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column(
+            "entity_type",
+            sa.Enum(
+                "LEAD",
+                "OPPORTUNITY",
+                "PROPOSAL",
+                "MEETING",
+                "ENROLLMENT",
+                name="entitytype",
+                native_enum=False,
+                length=20,
+            ),
+            nullable=False,
+        ),
+        sa.Column("entity_id", sa.Integer(), nullable=False),
+        sa.Column("event_type", sa.String(length=64), nullable=False),
+        sa.Column("payload", sa.JSON(), nullable=True),
+        sa.Column("actor", sa.String(length=255), nullable=True),
+        sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("org_id", sa.Integer(), nullable=False),
+        sa.ForeignKeyConstraint(["org_id"], ["organizations.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        "ix_events_entity",
+        "events",
+        ["entity_type", "entity_id", "occurred_at"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_events_occurred_at"), "events", ["occurred_at"], unique=False
+    )
+    op.create_index(op.f("ix_events_org_id"), "events", ["org_id"], unique=False)
+    op.create_index(
+        "ix_events_org_type_time",
+        "events",
+        ["org_id", "event_type", "occurred_at"],
+        unique=False,
+    )
+    op.create_table(
+        "outbox",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column(
+            "channel",
+            sa.Enum(
+                "EMAIL",
+                "WEBHOOK",
+                "IN_APP",
+                name="outboxchannel",
+                native_enum=False,
+                length=20,
+            ),
+            nullable=False,
+        ),
+        sa.Column("dedupe_key", sa.String(length=255), nullable=False),
+        sa.Column("payload", sa.JSON(), nullable=False),
+        sa.Column(
+            "status",
+            sa.Enum(
+                "PENDING",
+                "SENT",
+                "FAILED",
+                "DEAD",
+                name="outboxstatus",
+                native_enum=False,
+                length=20,
+            ),
+            nullable=False,
+        ),
+        sa.Column("attempts", sa.Integer(), nullable=False),
+        sa.Column("max_attempts", sa.Integer(), nullable=False),
+        sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("last_error", sa.String(), nullable=True),
+        sa.Column("sent_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("org_id", sa.Integer(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(["org_id"], ["organizations.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index("ix_outbox_dedupe", "outbox", ["org_id", "dedupe_key"], unique=True)
+    op.create_index(op.f("ix_outbox_org_id"), "outbox", ["org_id"], unique=False)
+    op.create_index(
+        "ix_outbox_pending", "outbox", ["status", "next_attempt_at"], unique=False
+    )
+    op.create_table(
         "refresh_tokens",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
@@ -97,6 +195,72 @@ def upgrade() -> None:
     )
     op.create_index(
         op.f("ix_refresh_tokens_user_id"), "refresh_tokens", ["user_id"], unique=False
+    )
+    op.create_table(
+        "scheduled_jobs",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("job_type", sa.String(length=64), nullable=False),
+        sa.Column(
+            "entity_type",
+            sa.Enum(
+                "LEAD",
+                "OPPORTUNITY",
+                "PROPOSAL",
+                "MEETING",
+                "ENROLLMENT",
+                name="entitytype",
+                native_enum=False,
+                length=20,
+            ),
+            nullable=True,
+        ),
+        sa.Column("entity_id", sa.Integer(), nullable=True),
+        sa.Column("payload", sa.JSON(), nullable=True),
+        sa.Column("run_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column(
+            "status",
+            sa.Enum(
+                "PENDING",
+                "RUNNING",
+                "DONE",
+                "CANCELLED",
+                "FAILED",
+                name="scheduledjobstatus",
+                native_enum=False,
+                length=20,
+            ),
+            nullable=False,
+        ),
+        sa.Column("attempts", sa.Integer(), nullable=False),
+        sa.Column("last_error", sa.String(), nullable=True),
+        sa.Column("executed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("org_id", sa.Integer(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(["org_id"], ["organizations.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        "ix_scheduled_jobs_due", "scheduled_jobs", ["status", "run_at"], unique=False
+    )
+    op.create_index(
+        "ix_scheduled_jobs_entity",
+        "scheduled_jobs",
+        ["entity_type", "entity_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_scheduled_jobs_org_id"), "scheduled_jobs", ["org_id"], unique=False
     )
     op.create_table(
         "teams",
@@ -264,44 +428,11 @@ def upgrade() -> None:
     op.create_index(
         op.f("ix_memberships_user_id"), "memberships", ["user_id"], unique=False
     )
-    op.create_table(
-        "lead_events",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("lead_id", sa.Integer(), nullable=False),
-        sa.Column("event_type", sa.String(length=64), nullable=False),
-        sa.Column("details", sa.String(), nullable=True),
-        sa.Column("actor", sa.String(length=255), nullable=True),
-        sa.Column("org_id", sa.Integer(), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(["lead_id"], ["leads.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["org_id"], ["organizations.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index(
-        op.f("ix_lead_events_lead_id"), "lead_events", ["lead_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix_lead_events_org_id"), "lead_events", ["org_id"], unique=False
-    )
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     # ### commands auto generated by Alembic - please adjust! ###
-    op.drop_index(op.f("ix_lead_events_org_id"), table_name="lead_events")
-    op.drop_index(op.f("ix_lead_events_lead_id"), table_name="lead_events")
-    op.drop_table("lead_events")
     op.drop_index(op.f("ix_memberships_user_id"), table_name="memberships")
     op.drop_index(op.f("ix_memberships_team_id"), table_name="memberships")
     op.drop_index(op.f("ix_memberships_org_id"), table_name="memberships")
@@ -316,9 +447,22 @@ def downgrade() -> None:
     op.drop_table("leads")
     op.drop_index(op.f("ix_teams_org_id"), table_name="teams")
     op.drop_table("teams")
+    op.drop_index(op.f("ix_scheduled_jobs_org_id"), table_name="scheduled_jobs")
+    op.drop_index("ix_scheduled_jobs_entity", table_name="scheduled_jobs")
+    op.drop_index("ix_scheduled_jobs_due", table_name="scheduled_jobs")
+    op.drop_table("scheduled_jobs")
     op.drop_index(op.f("ix_refresh_tokens_user_id"), table_name="refresh_tokens")
     op.drop_index(op.f("ix_refresh_tokens_jti"), table_name="refresh_tokens")
     op.drop_table("refresh_tokens")
+    op.drop_index("ix_outbox_pending", table_name="outbox")
+    op.drop_index(op.f("ix_outbox_org_id"), table_name="outbox")
+    op.drop_index("ix_outbox_dedupe", table_name="outbox")
+    op.drop_table("outbox")
+    op.drop_index("ix_events_org_type_time", table_name="events")
+    op.drop_index(op.f("ix_events_org_id"), table_name="events")
+    op.drop_index(op.f("ix_events_occurred_at"), table_name="events")
+    op.drop_index("ix_events_entity", table_name="events")
+    op.drop_table("events")
     op.drop_index(op.f("ix_users_email"), table_name="users")
     op.drop_table("users")
     op.drop_index(op.f("ix_organizations_slug"), table_name="organizations")

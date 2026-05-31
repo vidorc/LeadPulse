@@ -14,17 +14,18 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_tenant_context, require_manager
-from app.core.enums import LeadStatus
+from app.core.enums import EntityType, LeadStatus
 from app.core.tenant import TenantContext
 from app.db.session import get_db
 from app.models.lead import Lead
-from app.repositories.lead_repository import LeadEventRepository, LeadRepository
+from app.repositories.lead_repository import LeadRepository
+from app.schemas.event import EventResponse
 from app.schemas.lead import (
     LeadCreate,
     LeadOverride,
     LeadResponse,
 )
-from app.schemas.lead_event import LeadEventResponse
+from app.services import timeline
 from app.tasks.lead_tasks import process_lead_ai
 
 router = APIRouter(prefix="/leads", tags=["Leads"])
@@ -105,12 +106,21 @@ def override_lead(
     lead.decision = payload.decision
     lead.review_notes = payload.review_notes
     lead.requires_human_review = False
+    timeline.append_event(
+        db,
+        org_id=ctx.org_id,
+        entity_type=EntityType.LEAD,
+        entity_id=lead.id,
+        event_type="HUMAN_OVERRIDE",
+        payload={"decision": payload.decision.value},
+        actor=ctx.email,
+    )
     db.commit()
     db.refresh(lead)
     return lead
 
 
-@router.get("/{lead_id}/events", response_model=list[LeadEventResponse])
+@router.get("/{lead_id}/events", response_model=list[EventResponse])
 def get_lead_events(
     lead_id: int,
     db: Session = Depends(get_db),
@@ -119,4 +129,6 @@ def get_lead_events(
     # Ensure the lead belongs to the tenant before exposing its events.
     if LeadRepository(db, ctx).get(lead_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found")
-    return LeadEventRepository(db, ctx).for_lead(lead_id)
+    return timeline.timeline_for(
+        db, org_id=ctx.org_id, entity_type=EntityType.LEAD, entity_id=lead_id
+    )

@@ -6,7 +6,9 @@ from app.models.team import Team
 from app.models.membership import Membership
 from app.models.refresh_token import RefreshToken
 from app.models.lead import Lead
-from app.models.lead_event import LeadEvent
+from app.models.event import Event
+from app.models.scheduled_job import ScheduledJob
+from app.models.outbox import OutboxMessage
 
 __all__ = [
     "Organization",
@@ -15,5 +17,7 @@ __all__ = [
     "Membership",
     "RefreshToken",
     "Lead",
-    "LeadEvent",
+    "Event",
+    "ScheduledJob",
+    "OutboxMessage",
 ]

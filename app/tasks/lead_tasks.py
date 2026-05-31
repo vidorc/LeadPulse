@@ -1,35 +1,43 @@
-"""Async lead qualification pipeline.
+"""Async lead qualification pipeline — idempotent, validated, outbox-safe.
 
-Now tenant-aware (receives org_id) and aligned with the typed model (enum
-status/decision, boolean review flag). Adds db.rollback() on failure so a
-partial transaction never persists. The full hardening — idempotency guard,
-Pydantic-validated AI contract, and outbox-delivered side effects — lands in
-Phase 5; this version keeps the pipeline correct against the new schema.
+Resolves the audit's three pipeline criticals (architecture review §8.2):
+  * idempotency      — a processed lead is skipped, so a retry can't re-run
+                       side effects;
+  * validated AI     — raw LLM output goes through QualificationContract
+                       (bounded score, coerced enums) before touching state;
+  * exactly-once     — state change, timeline events, and the hot-lead
+                       notification (outbox enqueue) all commit in ONE
+                       transaction; delivery happens later via the relay, so a
+                       retry can never double-send.
+
+autoretry is narrowed to transient errors only (the old `(Exception,)` retried
+on programming errors and a missing key, burning all retries pointlessly).
 """
 
 from __future__ import annotations
 
 from app.core.celery_app import celery
-from app.core.enums import Intent, LeadStatus, Urgency
+from app.core.enums import EntityType, LeadDecision, LeadStatus
 from app.db.mixins import utcnow
 from app.db.session import SessionLocal
 from app.models.lead import Lead
-from app.services.action_router import execute_action
+from app.schemas.qualification import QualificationContract
+from app.services import timeline
+from app.services.action_router import describe_action
 from app.services.ai_qualifier import qualify_lead
-from app.services.audit_logger import log_event
 from app.services.decision_engine import decide_lead_action
+from app.services.notification_service import enqueue_hot_lead_alert
 from app.services.review_router import requires_review
 from app.services.scoring_guardrails import normalize_score
 
-
-def _coerce_enum(enum_cls, value, default):
-    """Map an arbitrary AI string to an enum member, falling back safely."""
-    if value is None:
-        return default
-    try:
-        return enum_cls(str(value).lower())
-    except ValueError:
-        return default
+# Statuses that mean the lead has already been through the pipeline.
+_TERMINAL_STATUSES = {
+    LeadStatus.QUALIFIED,
+    LeadStatus.MANUAL_REVIEW,
+    LeadStatus.ASSIGNED,
+    LeadStatus.CONVERTED,
+    LeadStatus.LOST,
+}
 
 
 @celery.task(
@@ -46,71 +54,84 @@ def process_lead_ai(self, lead_id: int, org_id: int):
             .filter(Lead.id == lead_id, Lead.org_id == org_id)
             .first()
         )
-        if not lead:
+        if lead is None:
+            return
+
+        # ---- Idempotency guard ----
+        if lead.processed_at is not None or lead.status in _TERMINAL_STATUSES:
             return
 
         lead.status = LeadStatus.QUALIFYING
-        log_event(
+        timeline.append_event(
             db,
             org_id=org_id,
-            lead_id=lead.id,
+            entity_type=EntityType.LEAD,
+            entity_id=lead.id,
             event_type="LEAD_RECEIVED",
-            details="Lead entered async pipeline",
+            payload={"source": lead.source},
         )
 
-        ai = qualify_lead(lead.source, lead.message)
+        # ---- Validated AI output (anti-corruption layer) ----
+        raw = qualify_lead(lead.source, lead.message)
+        q = QualificationContract.from_raw(raw)
 
-        corrected_score = normalize_score(
-            ai.get("score"), ai.get("urgency"), ai.get("budget")
-        )
-        review_needed = requires_review(corrected_score, ai.get("intent"))
+        corrected_score = normalize_score(q.score, q.urgency, q.budget)
+        review_needed = requires_review(corrected_score, q.intent)
 
-        lead.intent = _coerce_enum(Intent, ai.get("intent"), Intent.UNKNOWN)
-        lead.budget = str(ai.get("budget")) if ai.get("budget") is not None else None
-        lead.timeline = ai.get("timeline")
-        lead.location = ai.get("location")
-        lead.urgency = _coerce_enum(Urgency, ai.get("urgency"), Urgency.LOW)
+        lead.intent = q.intent
+        lead.budget = q.budget
+        lead.budget_amount = q.budget_amount
+        lead.timeline = q.timeline
+        lead.location = q.location
+        lead.urgency = q.urgency
         lead.score = corrected_score
-        lead.ai_summary = ai.get("ai_summary")
+        lead.ai_summary = q.ai_summary
 
-        log_event(
+        timeline.append_event(
             db,
             org_id=org_id,
-            lead_id=lead.id,
+            entity_type=EntityType.LEAD,
+            entity_id=lead.id,
             event_type="AI_PROCESSED",
-            details="Lead qualification completed",
+            payload={"score": corrected_score, "intent": q.intent.value},
         )
 
         if review_needed:
             lead.requires_human_review = True
             lead.status = LeadStatus.MANUAL_REVIEW
+            lead.decision = LeadDecision.MANUAL_REVIEW
             lead.next_action = "await_human_review"
             lead.action_result = "Queued for manual review"
-            log_event(
+            timeline.append_event(
                 db,
                 org_id=org_id,
-                lead_id=lead.id,
+                entity_type=EntityType.LEAD,
+                entity_id=lead.id,
                 event_type="MANUAL_REVIEW",
-                details="Lead sent for human review",
             )
         else:
-            decision = decide_lead_action(corrected_score, ai.get("urgency"))
-            result = execute_action(decision["decision"], lead)
+            decision = decide_lead_action(corrected_score, q.urgency)
             lead.requires_human_review = False
             lead.status = LeadStatus.QUALIFIED
             lead.decision = decision["decision"]
             lead.next_action = decision["next_action"]
-            lead.action_result = result
-            log_event(
+            lead.action_result = describe_action(decision["decision"])
+
+            # Enqueue side effect in THIS transaction (exactly-once via outbox).
+            if decision["decision"] == LeadDecision.HOT_LEAD:
+                enqueue_hot_lead_alert(db, org_id=org_id, lead=lead)
+
+            timeline.append_event(
                 db,
                 org_id=org_id,
-                lead_id=lead.id,
+                entity_type=EntityType.LEAD,
+                entity_id=lead.id,
                 event_type="DECISION_ASSIGNED",
-                details=decision["decision"].value,
+                payload={"decision": decision["decision"].value},
             )
 
         lead.processed_at = utcnow()
-        db.commit()
+        db.commit()  # state + events + outbox commit atomically
     except Exception:
         db.rollback()
         raise
