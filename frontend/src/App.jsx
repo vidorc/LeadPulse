@@ -1,18 +1,33 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  Outlet,
+} from "react-router-dom";
 
+import { tokenStore } from "./services/api";
+import AppShell from "./components/AppShell";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
-import ReviewQueue from "./pages/ReviewQueue";
-import LeadDetails from "./pages/LeadDetails";
+import Leads from "./pages/Leads";
+import Opportunities from "./pages/Opportunities";
+import LeakAlerts from "./pages/LeakAlerts";
+import Sequences from "./pages/Sequences";
 
-function ProtectedRoute({ children }) {
-  const token = localStorage.getItem("token");
-
-  if (!token) {
-    return <Navigate to="/login" />;
+/**
+ * Guards authenticated routes and wraps them in the app shell.
+ * Unauthenticated users are redirected to /login.
+ */
+function ProtectedLayout() {
+  if (!tokenStore.isAuthed()) {
+    return <Navigate to="/login" replace />;
   }
-
-  return children;
+  return (
+    <AppShell>
+      <Outlet />
+    </AppShell>
+  );
 }
 
 export default function App() {
@@ -21,34 +36,16 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
 
-        <Route
-          path="/dashboard"
-          element={
-            <ProtectedRoute>
-              <Dashboard />
-            </ProtectedRoute>
-          }
-        />
+        <Route element={<ProtectedLayout />}>
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/leads" element={<Leads />} />
+          <Route path="/opportunities" element={<Opportunities />} />
+          <Route path="/leak-alerts" element={<LeakAlerts />} />
+          <Route path="/sequences" element={<Sequences />} />
+        </Route>
 
-        <Route
-          path="/review"
-          element={
-            <ProtectedRoute>
-              <ReviewQueue />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/lead/:id"
-          element={
-            <ProtectedRoute>
-              <LeadDetails />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route path="*" element={<Navigate to="/login" />} />
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </BrowserRouter>
   );
