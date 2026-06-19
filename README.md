@@ -1,4 +1,3 @@
-```markdown
 <div align="center">
   <img src="./docs/assets/leadpulse-banner.png" alt="LeadPulse Banner" width="100%" />
 
